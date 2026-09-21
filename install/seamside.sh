@@ -255,6 +255,7 @@ SERVICE_USER="seamside"
 UNIT="seamside.service"
 PASS_DIR="/etc/seamside"
 PASS_FILE="\$PASS_DIR/\$INSTANCE.passphrase"
+ENV_FILE="\$PASS_DIR/\$INSTANCE.env"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -272,6 +273,15 @@ mkdir -p "\$DATA_DIR" "\$APP_DIR" "\$PASS_DIR"
 chmod 700 "\$PASS_DIR" "\$DATA_DIR"
 ( umask 077; printf '%s\n' "\$PASSPHRASE" > "\$PASS_FILE" )
 chmod 600 "\$PASS_FILE"
+# Upstream-Env-Format (SEAMSIDE_KEY_PASSPHRASE) als EnvironmentFile fuer die
+# Unit — LoadCredential scheitert in unprivilegierten LXC (243/CREDENTIALS).
+# Single-Quote-Maskierung rein per Bash-Expansion (kein sed: GNU-sed
+# schluckt \' im Replacement). ' -> '\'' .
+ENV_Q="\${PASSPHRASE//\\'/\\'\\\\\\'\\'}"
+( umask 077; printf "SEAMSIDE_KEY_PASSPHRASE='%s'\n" "\$ENV_Q" > "\$ENV_FILE" )
+chmod 600 "\$ENV_FILE"
+rm -f "\$PASS_FILE" 2>/dev/null || true
+[ -s "\$ENV_FILE" ] || { echo "[FEHLER] Konnte \$ENV_FILE nicht schreiben." >&2; exit 1; }
 chown -R "\$SERVICE_USER:\$SERVICE_USER" "\$DATA_DIR" "\$APP_DIR"
 
 FEED="https://updates.seamside.com/v1/00000000000000000000/linux/\$ARCH/0.0.1"
@@ -423,7 +433,9 @@ Type=simple
 User=\$SERVICE_USER
 Group=\$SERVICE_USER
 WorkingDirectory=\$DATA_DIR
-LoadCredential=seamside-key-passphrase:\$PASS_FILE
+# Passphrase via EnvironmentFile (root-only 600), nie in argv/Unit sichtbar.
+# KEIN LoadCredential: scheitert in unprivilegierten LXC (243/CREDENTIALS).
+EnvironmentFile=\$ENV_FILE
 ExecStart=\$APPIMAGE --appimage-extract-and-run serve --data-dir \$DATA_DIR --port \$PORT --accept-terms-of-service \$FIRST_RUN_ARGS
 Restart=always
 RestartSec=5
@@ -435,6 +447,7 @@ Environment=SEAMSIDE_DISABLE_MDNS=0
 [Install]
 WantedBy=multi-user.target
 UNIT_EOF
+systemd-analyze verify "/etc/systemd/system/\$UNIT" 2>&1 | head -5 || true
 systemctl daemon-reload
 systemctl enable "\$UNIT"
 systemctl restart "\$UNIT" 2>/dev/null || systemctl start "\$UNIT"
@@ -502,7 +515,7 @@ say "════════ INSTALLATION ERFOLGREICH ════════"
 say "  App        : Seamside serve-Knoten (Instanz: $SEAMSIDE_INSTANCE, Modus: $SEAMSIDE_MODE)"
 say "  Container  : CT $CT (Hostname: $HOSTNAME, onboot=1)"
 say "  Ressourcen : $CORES vCPU / ${RAM} MB RAM / ${DISK} GB Disk"
-say "  Daten      : $SEAMSIDE_DATA_DIR  + Passphrase /etc/seamside/${SEAMSIDE_INSTANCE}.passphrase (BEIDES sichern!)"
+  say "  Daten      : $SEAMSIDE_DATA_DIR  + Passphrase /etc/seamside/${SEAMSIDE_INSTANCE}.env (BEIDES sichern!)"
 if [[ "$SEAMSIDE_MODE" == "sibling" ]]; then
   say "  Naechster Schritt: in der Seamside-App unter Devices den Server genehmigen (Admin-Geraet)."
 else

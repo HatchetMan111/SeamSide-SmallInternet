@@ -8,7 +8,9 @@ Type=simple
 User=seamside
 Group=seamside
 WorkingDirectory=/var/lib/seamside/%i
-LoadCredential=seamside-key-passphrase:/etc/seamside/%i.passphrase
+# Passphrase via EnvironmentFile (root-only 600), nie in argv/Unit sichtbar.
+# KEIN LoadCredential: scheitert in unprivilegierten LXC (243/CREDENTIALS).
+EnvironmentFile=/etc/seamside/%i.env
 # First-Run-Flags (--new-user / --join-user) sind nach dem ersten Boot
 # sichere No-Ops und koennen dauerhaft in ExecStart bleiben.
 ExecStart=/opt/seamside/%i/Seamside.AppImage --appimage-extract-and-run serve --data-dir /var/lib/seamside/%i --port 8080 --accept-terms-of-service

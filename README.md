@@ -69,9 +69,11 @@ Das Skript (`set -euo pipefail`, idempotent):
    Löschanleitung abgelehnt, statt ins Leere zu installieren),
 4. installiert im Container Curl/CA-Certs, legt User `seamside` an,
    lädt die neueste AppImage vom offiziellen Feed nach `/opt/seamside/<instanz>/`,
-   sichert Passphrase (generiert falls leer) unter `/etc/seamside/<instanz>.passphrase` (600),
+   sichert Passphrase (generiert falls leer) als Upstream-Env-Format
+   (`SEAMSIDE_KEY_PASSPHRASE`) unter `/etc/seamside/<instanz>.env` (600),
 5. schreibt `seamside.service` (`Restart=always`, `After=network-online.target`,
-   Passphrase via `LoadCredential`), `systemctl enable --now`,
+   Passphrase via `EnvironmentFile` – kein `LoadCredential`, das in
+   unprivilegierten LXC mit 243/CREDENTIALS scheitert), `systemctl enable --now`,
 6. verifiziert `systemctl is-active seamside` + Binary-`--version` +
    `ss`-Listener auf dem serve-Port + HTTP-Probe (best-effort) und gibt den
    nächsten Schritt (Pairing-Genehmigung bzw. Operator-Einladung) aus.
@@ -86,7 +88,7 @@ Erwartete Schlussausgabe (Beispiel):
   App        : Seamside serve-Knoten (Instanz: main, Modus: sibling)
   Container  : CT 100 (Hostname: seamside, onboot=1)
   Ressourcen : 2 vCPU / 2048 MB RAM / 8 GB Disk
-  Daten      : /var/lib/seamside/main  + Passphrase /etc/seamside/main.passphrase (BEIDES sichern!)
+  Daten      : /var/lib/seamside/main  + Passphrase /etc/seamside/main.env (BEIDES sichern!)
   Naechster Schritt: in der Seamside-App unter Devices den Server genehmigen (Admin-Geraet).
   HINWEIS    : Keine Browser-Web-UI — Verwaltung via Seamside-App (Devices -> Connect). Kein Inbound-Port noetig.
   Service    : pct enter 100  ->  systemctl status seamside / journalctl -u seamside -f
@@ -164,7 +166,7 @@ ohne weitere Dateien auskommt.
 - **Warum 2 GB / 8 GB:** Upstream läuft schon auf 512 MB; 2 GB geben dem
   Startup-Peak (DBs + Sync + Deno-Arbiter) Luft. Swap-Tipp aus
   `seamside-manager.sh` gilt für Mini-VPS, im LXC per `--memory` anpassbar.
-- **Passphrase + Data-Dir gehören zusammen:** ohne `/etc/seamside/*.passphrase`
+- **Passphrase + Data-Dir gehören zusammen:** ohne `/etc/seamside/*.env`
   sind die Daten in `/var/lib/seamside/*` unlesbar – beides sichern.
 - **Pairing-Link (sibling):** Single-Use, 7 Tage gültig, muss `t=pairing`
   sein (kein Kontakt-Invite `t=invitation`), auf einem Admin-Gerät minten.
