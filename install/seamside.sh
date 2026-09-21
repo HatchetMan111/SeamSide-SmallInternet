@@ -132,7 +132,17 @@ trap error_trap ERR
 [[ "$(id -u)" -eq 0 ]] || fail "Als root auf dem Proxmox-Host ausfuehren."
 command -v pct >/dev/null 2>&1 || fail "pct nicht gefunden — auf dem Proxmox-Host (PVE) ausfuehren."
 command -v pvesh >/dev/null 2>&1 || fail "pvesh nicht gefunden — auf dem Proxmox-Host (PVE) ausfuehren."
-[[ "$ACCEPT_TOS" == "1" ]] || fail "Seamside-ToS (https://seamside.com/terms) akzeptieren: ACCEPT_TOS=1 bzw. --accept-tos."
+if [[ "$ACCEPT_TOS" != "1" ]]; then
+  say "Seamside-ToS: https://seamside.com/terms"
+  say "(Installation = Betrieb eines Seamside-serve-Knotens = Akzeptanz der ToS.)"
+  if [[ -t 0 ]]; then
+    read -rp "ToS akzeptieren und fortfahren? [y/N] " _tos_ans
+    [[ "${_tos_ans:-}" =~ ^[Yy]([Ee][Ss])?$ ]] || fail "Abgebrochen — ToS nicht akzeptiert. Tipp: ACCEPT_TOS=1 bzw. --accept-tos fuer Non-Interactive."
+    ACCEPT_TOS=1
+  else
+    fail "Seamside-ToS (https://seamside.com/terms) akzeptieren: ACCEPT_TOS=1 bzw. --accept-tos (kein TTY fuer Rueckfrage)."
+  fi
+fi
 [[ "$SEAMSIDE_MODE" == "sibling" || "$SEAMSIDE_MODE" == "new-user" ]] || fail "--mode muss sibling|new-user sein."
 if [[ "$SEAMSIDE_MODE" == "sibling" && -z "$SEAMSIDE_JOIN_LINK" ]]; then
   warn "Kein SEAMSIDE_JOIN_LINK gesetzt: 'sibling'-Instanz startet ohne Pairing-Link."

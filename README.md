@@ -25,7 +25,10 @@ offizielle AppImage von `updates.seamside.com` (x86_64/aarch64), systemd-Service
 bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/SeamSide-SmallInternet/main/install/seamside.sh)"
 ```
 
-ToS-Akzept (`https://seamside.com/terms`) ist Pflicht – entweder Flag oder Env:
+Das Script fragt interaktiv die ToS-Akzeptanz (`https://seamside.com/terms`)
+sowie – je nach Modus – Pairing-Link bzw. Operator-IDs ab. Für
+Non-Interactive/Automatisierung stattdessen per Env vorab setzen
+(siehe unten, `ACCEPT_TOS=1` überspringt die Rückfrage):
 
 ```bash
 # sibling-Modus: Server wird eines DEINER Geräte (Pairing-Link aus der App: Devices → + → Create pairing link)
