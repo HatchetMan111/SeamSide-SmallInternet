@@ -1,0 +1,23 @@
+[Unit]
+Description=Seamside server (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seamside
+Group=seamside
+WorkingDirectory=/var/lib/seamside/%i
+LoadCredential=seamside-key-passphrase:/etc/seamside/%i.passphrase
+# First-Run-Flags (--new-user / --join-user) sind nach dem ersten Boot
+# sichere No-Ops und koennen dauerhaft in ExecStart bleiben.
+ExecStart=/opt/seamside/%i/Seamside.AppImage --appimage-extract-and-run serve --data-dir /var/lib/seamside/%i --port 8080 --accept-terms-of-service
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/seamside/%i /opt/seamside/%i
+Environment=SEAMSIDE_DISABLE_MDNS=0
+
+[Install]
+WantedBy=multi-user.target
