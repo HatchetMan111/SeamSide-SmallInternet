@@ -437,9 +437,30 @@ WantedBy=multi-user.target
 UNIT_EOF
 systemctl daemon-reload
 systemctl enable "\$UNIT"
-systemctl restart "\$UNIT" || systemctl start "\$UNIT"
-sleep 6
-systemctl is-active "\$UNIT" || { echo "[FEHLER] Unit \$UNIT nicht aktiv" >&2; journalctl -u "\$UNIT" --no-pager -n 50 >&2; exit 1; }
+systemctl restart "\$UNIT" 2>/dev/null || systemctl start "\$UNIT"
+# Start-Warteschleife: der Erststart extrahiert die 191-MB-AppImage und
+# initialisiert DBs/Keystore — sleep 6 war zu kurz und traf ggf. ein
+# Restart-Fenster. Poll bis 180s; "stabil aktiv" = 2x active im Abstand
+# (entlarvt Crash-Loops, die kurz auf active blinken).
+echo "Warte auf stabil aktiven Service (max. 180s, Erststart dauert) ..."
+READY=0
+for _ in \$(seq 1 36); do
+  ST="\$(systemctl is-active "\$UNIT" 2>/dev/null || true)"
+  if [ "\$ST" = "active" ]; then
+    sleep 5
+    ST2="\$(systemctl is-active "\$UNIT" 2>/dev/null || true)"
+    if [ "\$ST2" = "active" ]; then READY=1; break; fi
+    echo "Service flackert (\$ST -> \$ST2) — warte weiter ..."
+  fi
+  sleep 5
+done
+if [ "\$READY" != "1" ]; then
+  echo "[FEHLER] Unit \$UNIT wurde in 180s nicht stabil aktiv." >&2
+  journalctl -u "\$UNIT" --no-pager -n 50 >&2 || true
+  systemctl status "\$UNIT" --no-pager --full >&2 || true
+  exit 1
+fi
+echo "Service stabil aktiv."
 BIN_VER="\$("\$APPIMAGE" --appimage-extract-and-run --version 2>/dev/null | tail -n1 | tr -d '[:space:]')"
 echo "Service aktiv. Binary-Version: \${BIN_VER:-unbekannt} (Feed: v\$VERSION)"
 # Port-Verifikation: internes serve-Interface muss lauschen (ss); HTTP-Probe
