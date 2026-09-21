@@ -123,8 +123,11 @@ error_trap() {
     pct exec "$CT" -- systemctl status seamside --no-pager --full >&2 || true
   fi
   say "Logdatei : $LOG_FILE" >&2
-  say "Re-run idempotent: Script erneut laufen lassen, ggf. mit --ctid ${CT:-<id>}" >&2
-  say "Re-run mit Trace:  bash -x <(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/SeamSide-SmallInternet/main/install/seamside.sh) --ctid ${CT:-<id>}" >&2
+  # HINWEIS: Bei `bash -c "$(...)" --ctid X` landet --ctid in $0, NICHT in $@!
+  # Korrekt: Datei laden (s. unten) oder `wget -qO- URL | bash -s -- --ctid X`.
+  say "Re-run idempotent (Datei laden, dann mit Flags laufen lassen):" >&2
+  say "  wget -qO /tmp/seamside.sh https://raw.githubusercontent.com/HatchetMan111/SeamSide-SmallInternet/main/install/seamside.sh" >&2
+  say "  ACCEPT_TOS=1 bash /tmp/seamside.sh --ctid ${CT:-<id>}   # Trace: bash -x ..." >&2
   say "═════════════════════════════════════════" >&2
 }
 trap error_trap ERR
@@ -138,6 +141,12 @@ if [[ "$ACCEPT_TOS" != "1" ]]; then
   say "(Installation = Betrieb eines Seamside-serve-Knotens = Akzeptanz der ToS.)"
   if [[ -t 0 ]]; then
     read -rp "ToS akzeptieren und fortfahren? [y/N] " _tos_ans
+    [[ "${_tos_ans:-}" =~ ^[Yy]([Ee][Ss])?$ ]] || fail "Abgebrochen — ToS nicht akzeptiert. Tipp: ACCEPT_TOS=1 bzw. --accept-tos fuer Non-Interactive."
+    ACCEPT_TOS=1
+  elif [[ -r /dev/tty && -w /dev/tty ]]; then
+    # stdin ist eine Pipe (z. B. `wget -qO- URL | bash -s -- ...`), aber ein
+    # Terminal existiert -> Rueckfrage direkt am TTY.
+    read -rp "ToS akzeptieren und fortfahren? [y/N] " _tos_ans < /dev/tty
     [[ "${_tos_ans:-}" =~ ^[Yy]([Ee][Ss])?$ ]] || fail "Abgebrochen — ToS nicht akzeptiert. Tipp: ACCEPT_TOS=1 bzw. --accept-tos fuer Non-Interactive."
     ACCEPT_TOS=1
   else

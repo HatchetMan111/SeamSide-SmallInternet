@@ -47,6 +47,19 @@ bash seamside.sh --ctid 101 --cores 2 --memory 2048 --disk 8 --bridge vmbr0 --st
 bash seamside.sh --debug   # = bash -x, maximale Fehlermeldungskette
 ```
 
+> **Achtung `bash -c`-Falle:** `bash -c "$(...)" --ctid 101` funktioniert
+> **nicht** – alles nach dem Script-String landet in `$0`, nicht in `$@`
+> (`[FEHLER] Unbekannte Option: 101`). Flags immer so übergeben:
+>
+> ```bash
+> wget -qO /tmp/seamside.sh https://raw.githubusercontent.com/HatchetMan111/SeamSide-SmallInternet/main/install/seamside.sh
+> ACCEPT_TOS=1 bash /tmp/seamside.sh --ctid 105   # Trace: bash -x /tmp/seamside.sh --ctid 105
+> # oder ohne Datei:  wget -qO- <URL> | ACCEPT_TOS=1 bash -s -- --ctid 105
+> ```
+>
+> Env-Variablen (`CT_ID=…`, `ACCEPT_TOS=…`) funktionieren dagegen auch direkt
+> vor `bash -c` (Zeile darüber).
+
 Das Skript (`set -euo pipefail`, idempotent):
 1. prüft Host/Tools/ToS, nimmt die nächste freie CT-ID,
 2. erkennt RootFS-Storage (bevorzugt `local-lvm`), lädt das neueste
