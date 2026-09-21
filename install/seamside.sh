@@ -336,22 +336,14 @@ check_system_libs() {
   rm -rf "\$LIBCHECK_DIR"
 }
 
-# binary_ok: ausfuehrbar UND richtige Architektur UND startet (--version).
-# Gibt bei Fehlschlag die ECHTE Ausgabe aus (nichts wird verschluckt).
+# binary_ok: ein Smoke-Versuch (--version). Schreibt alles nach SMOKE_LOG
+# (globale Temp-Datei, damit die Resolve-Schleife die Ausgabe parsen kann).
 binary_ok() {
   [ -x "\$1" ] || return 1
   if command -v file >/dev/null 2>&1; then
     file -b "\$1" | grep -q "ELF 64-bit" || { echo "file-Check: \$1 ist kein 64-bit-ELF: \$(file -b "\$1" | head -c 120)" >&2; return 1; }
   fi
-  local SMOKE_LOG rc
-  SMOKE_LOG="\$(mktemp)"
-  timeout 120 "\$1" --appimage-extract-and-run --version >"\$SMOKE_LOG" 2>&1; rc=\$?
-  if [ \$rc -ne 0 ]; then
-    echo "Smoke-Test (--version) Exit=\$rc, Ausgabe:" >&2
-    tail -n 15 "\$SMOKE_LOG" >&2
-  fi
-  rm -f "\$SMOKE_LOG"
-  return \$rc
+  timeout 120 "\$1" --appimage-extract-and-run --version >"\$SMOKE_LOG" 2>&1
 }
 CUR=""
 [ -s "\$APP_DIR/.version" ] && CUR="\$(tr -d '[:space:]' < "\$APP_DIR/.version")"
@@ -366,7 +358,33 @@ if [ ! -x "\$APPIMAGE" ] || [ "\$CUR" != "\$VERSION" ]; then
 fi
 chown "\$SERVICE_USER:\$SERVICE_USER" "\$APPIMAGE" "\$APP_DIR/.version"
 check_system_libs "\$APPIMAGE" || exit 1
-binary_ok "\$APPIMAGE" || { echo "[FEHLER] AppImage v\$VERSION startet nicht (Details oben). URL: \$URL" >&2; echo "Hinweis bei 'glibc'-Meldung: Gast-OS zu alt — Debian 13+ (oder Ubuntu 24.04+) noetig." >&2; exit 1; }
+# Smoke-Resolve-Schleife: ldd sieht nur statisch gelinkte Libs. Per dlopen
+# nachgeladene (Font-Stack: libfribidi u. a.) knallen erst zur Laufzeit mit
+# "error while loading shared libraries: X". Die Meldung nennt den exakten
+# Soname -> installieren -> Retry, max. 8 Runden, kein endlos-Loop.
+SMOKE_LOG="\$(mktemp)"
+SMOKE_OK=0
+TRIED_LIBS=""
+for _ in 1 2 3 4 5 6 7 8; do
+  if binary_ok "\$APPIMAGE"; then SMOKE_OK=1; break; fi
+  echo "Smoke-Test (--version) fehlgeschlagen, Ausgabe:" >&2
+  tail -n 8 "\$SMOKE_LOG" >&2
+  MISSING_SONAME="\$(grep -oE 'error while loading shared libraries: [^ :]+' "\$SMOKE_LOG" | head -1 | awk '{print \$NF}' || true)"
+  [ -n "\$MISSING_SONAME" ] || break
+  case " \$TRIED_LIBS " in
+    *" \$MISSING_SONAME "*) echo "[FEHLER] \$MISSING_SONAME schon installiert, startet trotzdem nicht." >&2; break ;;
+  esac
+  TRIED_LIBS="\$TRIED_LIBS \$MISSING_SONAME"
+  echo "Laufzeit-Lib fehlt (dlopen, fuer ldd unsichtbar): \$MISSING_SONAME — installiere ..."
+  apt-get update -qq >/dev/null 2>&1 || true
+  apt_install_for_soname "\$MISSING_SONAME" || { echo "[FEHLER] Kein apt-Paket fuer \$MISSING_SONAME gefunden." >&2; break; }
+done
+rm -f "\$SMOKE_LOG"
+if [ "\$SMOKE_OK" != "1" ]; then
+  echo "[FEHLER] AppImage v\$VERSION startet nicht (Details oben). URL: \$URL" >&2
+  echo "Hinweis bei 'glibc'-Meldung: Gast-OS zu alt — Debian 13+ (oder Ubuntu 24.04+) noetig." >&2
+  exit 1
+fi
 echo "AppImage v\$VERSION verifiziert (Libs + --version OK)."
 
 # systemd-Unit (Restart=always, After=network-online.target, Passphrase via Credential)
