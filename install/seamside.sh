@@ -49,6 +49,9 @@ SEAMSIDE_PASSPHRASE="${SEAMSIDE_PASSPHRASE:-}"
 SEAMSIDE_DATA_DIR="${SEAMSIDE_DATA_DIR:-}"  # leer = /var/lib/seamside/<instance>
 SEAMSIDE_PORT="${SEAMSIDE_PORT:-8080}"      # nur interner serve-Port
 ACCEPT_TOS="${ACCEPT_TOS:-0}"
+REBOOT_TEST="${REBOOT_TEST:-auto}"   # auto: nur bei neu erstelltem CT; 1: immer; 0: nie (--reboot-test/--no-reboot-test)
+SKIP_BACKUP="${SKIP_BACKUP:-0}"      # 1: kein Auto-Backup (--no-backup)
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/seamside}"  # Ziel auf dem Proxmox-Host, rotierend (neueste 3 pro CT)
 DEBUG="${DEBUG:-0}"
 CT_ID="${CT_ID:-}"
 
@@ -70,9 +73,12 @@ Usage: $0 [Optionen]
   --mode sibling|new-user --join-link URL --display-name NAME
   --operators id1,id2 --passphrase SECRET --data-dir /pfad --port N
   --instance NAME --accept-tos --debug --help
+  --reboot-test | --no-reboot-test   (Default: auto = nur bei neu erstelltem CT)
+  --no-backup                        (Default: Backup auf Host, neueste 3 pro CT)
 Env: CT_ID CORES RAM DISK BRIDGE STORAGE SEAMSIDE_MODE SEAMSIDE_JOIN_LINK
      SEAMSIDE_DISPLAY_NAME SEAMSIDE_OPERATORS SEAMSIDE_PASSPHRASE
      SEAMSIDE_DATA_DIR SEAMSIDE_PORT SEAMSIDE_INSTANCE ACCEPT_TOS DEBUG=1
+     REBOOT_TEST=1/0/auto SKIP_BACKUP=1 BACKUP_DIR=/pfad
 EOF
 }
 
@@ -94,6 +100,9 @@ while [[ $# -gt 0 ]]; do
     --port) SEAMSIDE_PORT="$2"; shift 2 ;;
     --instance) SEAMSIDE_INSTANCE="$2"; shift 2 ;;
     --accept-tos) ACCEPT_TOS=1; shift ;;
+    --reboot-test) REBOOT_TEST=1; shift ;;
+    --no-reboot-test) REBOOT_TEST=0; shift ;;
+    --no-backup) SKIP_BACKUP=1; shift ;;
     --debug) DEBUG=1; set -x; shift ;;
     -h|--help) usage; exit 0 ;;
     *) fail "Unbekannte Option: $1 (siehe --help)" ;;
@@ -157,8 +166,29 @@ if [[ "$ACCEPT_TOS" != "1" ]]; then
 fi
 [[ "$SEAMSIDE_MODE" == "sibling" || "$SEAMSIDE_MODE" == "new-user" ]] || fail "--mode muss sibling|new-user sein."
 if [[ "$SEAMSIDE_MODE" == "sibling" && -z "$SEAMSIDE_JOIN_LINK" ]]; then
-  warn "Kein SEAMSIDE_JOIN_LINK gesetzt: 'sibling'-Instanz startet ohne Pairing-Link."
-  warn "Link in der Seamside-App erzeugen (Devices -> + -> Create pairing link) und Script erneut laufen lassen."
+  say "Kein Pairing-Link mitgegeben. Einen in der Seamside-App erzeugen:"
+  say "  Devices -> + -> Namen vergeben -> Create pairing link (Admin-Geraet, Single-Use, 7 Tage)."
+  say "Ohne Link laeuft der Server, gehoert aber zu niemandem (Genehmigung spaeter nachholbar)."
+  _tty=""
+  if [[ -t 0 ]]; then _tty="0";
+  elif [[ -r /dev/tty && -w /dev/tty ]]; then _tty="/dev/tty"; fi
+  if [[ -n "$_tty" ]]; then
+    if [[ "$_tty" == "0" ]]; then read -rp "Pairing-Link einfuegen (leer = ohne fortfahren): " _jl;
+    else read -rp "Pairing-Link einfuegen (leer = ohne fortfahren): " _jl < /dev/tty; fi
+    _jl="$(printf '%s' "${_jl:-}" | tr -d '[:space:]')"
+    if [[ -n "$_jl" ]]; then
+      case "$_jl" in
+        *t=pairing*) SEAMSIDE_JOIN_LINK="$_jl"; ok "Pairing-Link uebernommen." ;;
+        *t=invitation*) fail "Das ist ein Kontakt-Invite (t=invitation), kein Geraete-Pairing (t=pairing). Bitte korrekten Link aus Devices -> + holen." ;;
+        *://*) warn "Link ohne t=pairing-Kennung — uebernehme trotzdem."; SEAMSIDE_JOIN_LINK="$_jl" ;;
+        *) fail "Das sieht nicht nach einem Link aus (kein ://). Abgebrochen — mit --join-link URL erneut laufen lassen." ;;
+      esac
+    else
+      warn "'sibling'-Instanz startet ohne Pairing-Link — Genehmigung spaeter via Re-Run mit --join-link."
+    fi
+  else
+    warn "Kein SEAMSIDE_JOIN_LINK gesetzt (kein TTY fuer Rueckfrage): 'sibling'-Instanz startet ohne Pairing-Link."
+  fi
 fi
 if [[ "$SEAMSIDE_MODE" == "new-user" && -z "$SEAMSIDE_OPERATORS" ]]; then
   warn "Keine SEAMSIDE_OPERATORS gesetzt: niemand kann den Server remote administrieren."
@@ -203,9 +233,11 @@ fi
 TPL_PATH="${TEMPLATE_STORAGE}:vztmpl/${TPL}"
 
 # ---------------- Container erstellen oder wiederverwenden ----------------
+FRESH_CREATE=0
 if pct status "$CT" >/dev/null 2>&1; then
   info "CT $CT existiert bereits — idempotenter Update-Pfad (kein Neuaufbau)."
 else
+  FRESH_CREATE=1
   ROOTPW="$(head -c 24 /dev/urandom | base64 | tr -d '/+=\n' | head -c 20)"
   export ROOTPW
   info "Erstelle LXC $CT (Hostname: $HOSTNAME, ${CORES} vCPU / ${RAM} MB / ${DISK} GB, onboot=1) ..."
@@ -518,12 +550,38 @@ CT_IP="$(pct exec "$CT" -- ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}
 ok "Service laeuft (systemctl is-active seamside = active)."
 ok "Container $CT startet automatisch (onboot: 1)."
 
+# ---------------- Auto-Backup auf den Host ----------------
+# Data-Dir + .env gehoeren zusammen (ohne .env unlesbar). Tar im CT bauen,
+# per pct pull holen, rotierend aufheben (neueste 3 pro CT).
+BACKUP_FILE=""
+if [[ "$SKIP_BACKUP" != "1" ]]; then
+  info "Auto-Backup (Data-Dir + Passphrase) auf den Host ..."
+  mkdir -p "$BACKUP_DIR" || warn "Backup-Dir $BACKUP_DIR nicht anlegbar — Backup uebersprungen."
+  if [[ -d "$BACKUP_DIR" ]]; then
+    BACKUP_TMP="/tmp/seamside-backup-${CT}-$(date +%Y%m%d-%H%M%S).tar.gz"
+    if pct exec "$CT" -- tar -czf "$BACKUP_TMP" -C / "${SEAMSIDE_DATA_DIR#/}" "etc/seamside/${SEAMSIDE_INSTANCE}.env" 2>/dev/null; then
+      BACKUP_FILE="${BACKUP_DIR}/seamside-ct${CT}-$(date +%Y%m%d-%H%M%S).tar.gz"
+      if pct pull "$CT" "$BACKUP_TMP" "$BACKUP_FILE" 2>/dev/null; then
+        pct exec "$CT" -- rm -f "$BACKUP_TMP" 2>/dev/null || true
+        ok "Backup: $BACKUP_FILE"
+        ls -t "${BACKUP_DIR}"/seamside-ct"${CT}"-*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
+      else
+        warn "pct pull fehlgeschlagen — Backup liegt nur im CT: $BACKUP_TMP"
+        BACKUP_FILE="$BACKUP_TMP (im CT)"
+      fi
+    else
+      warn "Backup-Tar im CT fehlgeschlagen — ohne Backup fortgefahren."
+    fi
+  fi
+fi
+
 say ""
 say "════════ INSTALLATION ERFOLGREICH ════════"
 say "  App        : Seamside serve-Knoten (Instanz: $SEAMSIDE_INSTANCE, Modus: $SEAMSIDE_MODE)"
 say "  Container  : CT $CT (Hostname: $HOSTNAME, onboot=1)"
 say "  Ressourcen : $CORES vCPU / ${RAM} MB RAM / ${DISK} GB Disk"
   say "  Daten      : $SEAMSIDE_DATA_DIR  + Passphrase /etc/seamside/${SEAMSIDE_INSTANCE}.env (BEIDES sichern!)"
+  [[ -n "$BACKUP_FILE" ]] && say "  Backup     : $BACKUP_FILE (rotierend, neueste 3 pro CT)"
 if [[ "$SEAMSIDE_MODE" == "sibling" ]]; then
   say "  Naechster Schritt: in der Seamside-App unter Devices den Server genehmigen (Admin-Geraet)."
 else
@@ -536,6 +594,34 @@ fi
 say "  Service    : pct enter $CT  ->  systemctl status seamside / journalctl -u seamside -f"
 say "  Update     : Script erneut laufen lassen (idempotent), ggf. mit --ctid $CT"
 say "  Deinstall  : pct stop $CT && pct destroy $CT"
-say "  Reboot-Test: pct reboot $CT && sleep 30 && pct exec $CT -- systemctl is-active seamside"
 say "  Log        : $LOG_FILE"
 say "═════════════════════════════════════════"
+
+# ---------------- Auto-Reboot-Test ----------------
+# Nur bei neu erstelltem CT (auto) oder per REBOOT_TEST=1/--reboot-test.
+# Nie ungefragt auf bestehenden (Update-)CTs: pct reboot + warten + pruefen.
+DO_REBOOT=0
+if [[ "$REBOOT_TEST" == "1" ]]; then DO_REBOOT=1
+elif [[ "$REBOOT_TEST" == "auto" && "$FRESH_CREATE" == "1" ]]; then DO_REBOOT=1
+fi
+if [[ "$DO_REBOOT" == "1" ]]; then
+  say ""
+  info "Auto-Reboot-Test: pct reboot $CT ..."
+  pct reboot "$CT"
+  info "Warte auf Container (max. 120s) ..."
+  REBOOTED=0
+  for _ in $(seq 1 60); do pct exec "$CT" -- true 2>/dev/null && { REBOOTED=1; break; }; sleep 2; done
+  if [[ "$REBOOTED" != "1" ]]; then fail "CT $CT kam nach Reboot nicht zurueck (120s). Pruefen: pct status $CT"
+  else
+    sleep 10  # Dienst braucht nach Boot einen Moment (Extract + Init)
+    if pct exec "$CT" -- systemctl is-active seamside 2>/dev/null | grep -qx "active"; then
+      ok "Reboot-Test BESTANDEN: Service nach Reboot wieder active."
+    else
+      fail "Reboot-Test FEHLGESCHLAGEN: Service nach Reboot nicht active. Diagnose: pct exec $CT -- systemctl status seamside --no-pager --full"
+    fi
+    pct config "$CT" | grep -qi "onboot: 1" && ok "onboot: 1 bestaetigt."
+  fi
+else
+  say "  Reboot-Test: uebersprungen (nur auto bei Neu-Erstellung / --reboot-test)."
+  say "               Manuell: pct reboot $CT && sleep 30 && pct exec $CT -- systemctl is-active seamside"
+fi

@@ -45,6 +45,9 @@ Anpassungen (Env oder Flag, Flags gewinnen):
 CT_ID=101 CORES=2 RAM=2048 DISK=8 ACCEPT_TOS=1 bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/SeamSide-SmallInternet/main/install/seamside.sh)"
 bash seamside.sh --ctid 101 --cores 2 --memory 2048 --disk 8 --bridge vmbr0 --storage local-lvm --accept-tos
 bash seamside.sh --debug   # = bash -x, maximale Fehlermeldungskette
+bash seamside.sh --ctid 105 --reboot-test     # Reboot-Test erzwingen (auch auf bestehendem CT)
+bash seamside.sh --ctid 105 --no-reboot-test  # Reboot-Test unterdruecken (auch bei Neu-Erstellung)
+bash seamside.sh --ctid 105 --no-backup       # Auto-Backup unterdruecken
 ```
 
 > **Achtung `bash -c`-Falle:** `bash -c "$(...)" --ctid 101` funktioniert
@@ -106,9 +109,14 @@ CT=100
 pct reboot $CT
 sleep 30
 pct exec $CT -- systemctl is-active seamside   # muss: active
-pct exec $CT -- journalctl -u seamside --no-pager -n 20
+pct exec $CT -- tail -n 20 /var/log/seamside.log
 pct config $CT | grep -i onboot                # muss: onboot: 1
 ```
+
+Der Reboot-Test läuft **automatisch** bei jeder Neu-Erstellung
+(`REBOOT_TEST=auto`) sowie per `--reboot-test` / `REBOOT_TEST=1` –
+auf bestehenden Update-CTs nur auf ausdrücklichen Wunsch
+(`--no-reboot-test` unterdrückt ihn überall).
 
 ## 3. Update (idempotent – einfach erneut laufen lassen)
 
@@ -132,7 +140,21 @@ pct stop 100 && pct destroy 100
 # Achtung: damit sind auch /var/lib/seamside/* und die Passphrase weg — vorher sichern!
 ```
 
-## 5. Debugging (komplette Fehlermeldungskette)
+## 5. Backup & Restore (automatisch)
+
+Nach jeder Installation zieht das Script Data-Dir + Passphrase-Datei per
+`pct pull` auf den Host: `/var/backups/seamside/seamside-ct<CT>-<Datum>.tar.gz`
+(rotierend, neueste 3 pro CT; `--no-backup` / `SKIP_BACKUP=1` schaltet ab,
+`BACKUP_DIR=` verlegt das Ziel). Restore:
+
+```bash
+tar -tzf /var/backups/seamside/seamside-ct100-<Datum>.tar.gz   # Inhalt pruefen
+pct push 100 /var/backups/seamside/seamside-ct100-<Datum>.tar.gz /tmp/restore.tar.gz
+pct exec 100 -- tar -xzf /tmp/restore.tar.gz -C /
+pct exec 100 -- systemctl restart seamside
+```
+
+## 6. Debugging (komplette Fehlermeldungskette)
 
 - Jeder Lauf loggt **stdout+stderr vollständig** nach `/tmp/seamside-install-<Datum>.log`.
 - Bei Fehlern druckt das Skript: Befehl, Zeile, Exit-Code, Stacktrace
@@ -148,7 +170,7 @@ pct exec 100 -- tail -n 100 /var/log/seamside.log   # App-stdout/stderr (journal
 pct exec 100 -- systemctl status seamside --no-pager --full
 ```
 
-## 6. Dateien in diesem Paket
+## 7. Dateien in diesem Paket
 
 ```text
 seamside-proxmox/
@@ -160,7 +182,7 @@ seamside-proxmox/
 `install/seamside.sh` bettet die Unit-Vorlage ein, damit der Einzeiler
 ohne weitere Dateien auskommt.
 
-## 7. Hinweise
+## 8. Hinweise
 
 - **Warum LXC statt VM:** kein eigener Kernel nötig – AppImage mit
   `--appimage-extract-and-run` braucht weder FUSE noch GPU. Keine VM nötig.
