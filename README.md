@@ -144,7 +144,8 @@ bash -x seamside.sh --ctid 100 --accept-tos
 DEBUG=1 bash seamside.sh --ctid 100 --accept-tos
 # Log mitschicken:
 tail -n 200 /tmp/seamside-install-*.log
-pct exec 100 -- journalctl -u seamside --no-pager -n 100
+pct exec 100 -- tail -n 100 /var/log/seamside.log   # App-stdout/stderr (journald fehlt in vielen LXC)
+pct exec 100 -- systemctl status seamside --no-pager --full
 ```
 
 ## 6. Dateien in diesem Paket

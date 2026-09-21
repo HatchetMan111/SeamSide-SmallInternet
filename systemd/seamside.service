@@ -17,8 +17,14 @@ ExecStart=/opt/seamside/%i/Seamside.AppImage --appimage-extract-and-run serve --
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
+PrivateTmp=true
 ProtectSystem=strict
+ProtectHome=true
 ReadWritePaths=/var/lib/seamside/%i /opt/seamside/%i
+# Datei-Log: journald existiert in vielen LXC nicht — ohne das landet
+# stderr der App im Nichts.
+StandardOutput=append:/var/log/seamside.log
+StandardError=inherit
 Environment=SEAMSIDE_DISABLE_MDNS=0
 
 [Install]

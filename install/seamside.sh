@@ -117,8 +117,10 @@ error_trap() {
     pct config "$CT" >&2 || true
     say "--- pct status $CT ---" >&2
     pct status "$CT" >&2 || true
-    say "--- journal (letzte 50) ---" >&2
+    say "--- journal (letzte 50; oft leer in LXC ohne journald) ---" >&2
     pct exec "$CT" -- journalctl -u seamside --no-pager -n 50 >&2 || true
+    say "--- /var/log/seamside.log im CT (letzte 60) ---" >&2
+    pct exec "$CT" -- tail -n 60 /var/log/seamside.log >&2 || true
     say "--- systemctl status ---" >&2
     pct exec "$CT" -- systemctl status seamside --no-pager --full >&2 || true
   fi
@@ -440,8 +442,14 @@ ExecStart=\$APPIMAGE --appimage-extract-and-run serve --data-dir \$DATA_DIR --po
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
+PrivateTmp=true
 ProtectSystem=strict
+ProtectHome=true
 ReadWritePaths=\$DATA_DIR \$APP_DIR
+# Datei-Log: journald existiert in vielen LXC nicht ("No journal files") —
+# ohne das landet stderr der App im Nichts. FD wird von PID1 geoeffnet.
+StandardOutput=append:/var/log/seamside.log
+StandardError=inherit
 Environment=SEAMSIDE_DISABLE_MDNS=0
 
 [Install]
