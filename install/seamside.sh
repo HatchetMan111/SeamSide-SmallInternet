@@ -265,30 +265,95 @@ case "\$URL" in
 esac
 echo "Latest: v\$VERSION (\$PLATFORM_KEY)"
 
+# apt_install_for_soname <soname>: fehlende .so.0-Lib per apt nachinstallieren.
+# Der Paketname leitet sich meist aus dem Soname-Stamm ab (libfoo.so.0 ->
+# libfoo0), Fallback: apt-cache pkgnames mit gleichem Stamm.
+apt_install_for_soname() {
+  local lib="\$1" base ver base_re cand_list cand
+  base="\${lib%%.so*}"; base="\${base,,}"; base="\${base//_/-}"
+  ver=""; [[ "\$lib" == *.so.* ]] && ver="\${lib##*.so.}"
+  base_re="\$(sed 's/[.+]/\\\\&/g' <<<"\$base")"
+  cand_list="\$( { printf '%s\n' "\${base}\${ver}" "\${base}-\${ver}" "\$base"
+    apt-cache pkgnames "\$base" 2>/dev/null | grep -E "^\${base_re}[0-9.-]*\${ver}[a-z]?\$" || true
+  } | awk 'NF && !seen[\$0]++' )"
+  for cand in \$cand_list; do
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "\$cand" >/dev/null 2>&1; then
+      echo "Lib \$lib installiert (Paket: \$cand)."
+      return 0
+    fi
+  done
+  return 1
+}
+
+# check_system_libs: die AppImage buendelt fast alles, erwartet aber ein paar
+# Basis-Display-Libs vom OS schon beim Prozessstart (sonst Exit 127,
+# z. B. libwayland-server.so.0 auf minimalem Debian). Extrahieren, per ldd
+# gegen gebuendelte Libs pruefen, Fehlendes per apt nachinstallieren.
+check_system_libs() {
+  local APPIMAGE="\$1"
+  echo "Pruefe System-Bibliotheken (AppImage braucht Basis-Libs schon beim Start) ..."
+  local LIBCHECK_DIR=""; LIBCHECK_DIR="\$(mktemp -d)"; local MAIN_BIN=""
+  if (cd "\$LIBCHECK_DIR" && "\$APPIMAGE" --appimage-extract >/dev/null 2>&1); then
+    MAIN_BIN="\$(find "\$LIBCHECK_DIR/squashfs-root/usr/bin" -maxdepth 1 -type f -perm -u+x 2>/dev/null | head -1)"
+  fi
+  if [ -n "\$MAIN_BIN" ] && command -v ldd >/dev/null 2>&1; then
+    local BUNDLED_LIB_PATH MISSING
+    BUNDLED_LIB_PATH="\$(find "\$LIBCHECK_DIR/squashfs-root" -maxdepth 4 -type d -name 'lib*' 2>/dev/null | paste -sd: -)"
+    MISSING="\$(LD_LIBRARY_PATH="\$BUNDLED_LIB_PATH" ldd "\$MAIN_BIN" 2>/dev/null | awk '/not found/{print \$1}' | sort -u || true)"
+    if [ -n "\$MISSING" ]; then
+      echo "Fehlende Libs: \$(printf '%s' "\$MISSING" | tr '\n' ' ')"
+      apt-get update -qq >/dev/null 2>&1 || true
+      local lib
+      for lib in \$MISSING; do
+        apt_install_for_soname "\$lib" || echo "[WARN] Kein apt-Paket fuer \$lib gefunden." >&2
+      done
+      MISSING="\$(LD_LIBRARY_PATH="\$BUNDLED_LIB_PATH" ldd "\$MAIN_BIN" 2>/dev/null | awk '/not found/{print \$1}' | sort -u || true)"
+    fi
+    if [ -n "\$MISSING" ]; then
+      echo "[FEHLER] Diese System-Libs fehlen weiterhin:" >&2
+      printf '%s\n' "\$MISSING" >&2
+      rm -rf "\$LIBCHECK_DIR"
+      return 1
+    fi
+    echo "Alle System-Libs vorhanden."
+  else
+    echo "[WARN] Lib-Check nicht moeglich (--appimage-extract/ldd) — weiter."
+  fi
+  rm -rf "\$LIBCHECK_DIR"
+}
+
 # binary_ok: ausfuehrbar UND richtige Architektur UND startet (--version).
-# Faengt falsche Plattform-Binaries (z. B. macOS-tarball als .AppImage) ab,
-# BEVOR die systemd-Unit sie in eine Restart-Loop schickt. Prueft auch ein
-# bereits vorhandenes Binary, damit ein Re-Run ein kaputtes ersetzt.
+# Gibt bei Fehlschlag die ECHTE Ausgabe aus (nichts wird verschluckt).
 binary_ok() {
   [ -x "\$1" ] || return 1
   if command -v file >/dev/null 2>&1; then
     file -b "\$1" | grep -q "ELF 64-bit" || { echo "file-Check: \$1 ist kein 64-bit-ELF: \$(file -b "\$1" | head -c 120)" >&2; return 1; }
   fi
-  timeout 120 "\$1" --appimage-extract-and-run --version >/dev/null 2>&1
+  local SMOKE_LOG rc
+  SMOKE_LOG="\$(mktemp)"
+  timeout 120 "\$1" --appimage-extract-and-run --version >"\$SMOKE_LOG" 2>&1; rc=\$?
+  if [ \$rc -ne 0 ]; then
+    echo "Smoke-Test (--version) Exit=\$rc, Ausgabe:" >&2
+    tail -n 15 "\$SMOKE_LOG" >&2
+  fi
+  rm -f "\$SMOKE_LOG"
+  return \$rc
 }
-if binary_ok "\$APPIMAGE"; then
-  echo "AppImage bereits vorhanden und lauffaehig — kein Download."
-else
-  [ -x "\$APPIMAGE" ] && echo "Vorhandenes Binary defekt/falsch — lade neu."
+CUR=""
+[ -s "\$APP_DIR/.version" ] && CUR="\$(tr -d '[:space:]' < "\$APP_DIR/.version")"
+if [ ! -x "\$APPIMAGE" ] || [ "\$CUR" != "\$VERSION" ]; then
+  [ -x "\$APPIMAGE" ] && echo "Update \$CUR -> \$VERSION ..."
   systemctl stop "\$UNIT" 2>/dev/null || true
   curl -fL --max-time 1800 -o "\$APPIMAGE.part" "\$URL"
   mv "\$APPIMAGE.part" "\$APPIMAGE"
   chmod 755 "\$APPIMAGE"
-  binary_ok "\$APPIMAGE" || { echo "[FEHLER] Heruntergeladenes Binary startet nicht: \$URL (file: \$(file -b "\$APPIMAGE" | head -c 120))" >&2; exit 1; }
   printf '%s\n' "\$VERSION" > "\$APP_DIR/.version"
-  echo "AppImage v\$VERSION verifiziert (file + --version OK)."
+  CUR="\$VERSION"
 fi
 chown "\$SERVICE_USER:\$SERVICE_USER" "\$APPIMAGE" "\$APP_DIR/.version"
+check_system_libs "\$APPIMAGE" || exit 1
+binary_ok "\$APPIMAGE" || { echo "[FEHLER] AppImage v\$VERSION startet nicht (Details oben). URL: \$URL" >&2; exit 1; }
+echo "AppImage v\$VERSION verifiziert (Libs + --version OK)."
 
 # systemd-Unit (Restart=always, After=network-online.target, Passphrase via Credential)
 FIRST_RUN_ARGS=""
