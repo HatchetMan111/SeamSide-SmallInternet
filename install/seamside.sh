@@ -123,7 +123,8 @@ error_trap() {
     pct exec "$CT" -- systemctl status seamside --no-pager --full >&2 || true
   fi
   say "Logdatei : $LOG_FILE" >&2
-  say "Re-run mit Trace: bash -x $0 --ctid ${CT:-<id>}  /  DEBUG=1" >&2
+  say "Re-run idempotent: Script erneut laufen lassen, ggf. mit --ctid ${CT:-<id>}" >&2
+  say "Re-run mit Trace:  bash -x <(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/SeamSide-SmallInternet/main/install/seamside.sh) --ctid ${CT:-<id>}" >&2
   say "═════════════════════════════════════════" >&2
 }
 trap error_trap ERR
@@ -234,7 +235,7 @@ PASS_FILE="\$PASS_DIR/\$INSTANCE.passphrase"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates iproute2 systemd-sysv 2>&1 | tail -2
+apt-get install -y -qq curl ca-certificates file iproute2 systemd-sysv 2>&1 | tail -2
 
 ARCH="\$(uname -m)"
 case "\$ARCH" in
@@ -252,21 +253,40 @@ chown -R "\$SERVICE_USER:\$SERVICE_USER" "\$DATA_DIR" "\$APP_DIR"
 
 FEED="https://updates.seamside.com/v1/00000000000000000000/linux/\$ARCH/0.0.1"
 MANIFEST="\$(curl -fsSL --max-time 30 "\$FEED")" || { echo "[FEHLER] updates.seamside.com nicht erreichbar" >&2; exit 1; }
+PLATFORM_KEY="linux-\$ARCH"
+PLATFORM_BLOB="\$(printf '%s' "\$MANIFEST" | grep -oE "\"\$PLATFORM_KEY\"[[:space:]]*:[[:space:]]*\\{[^}]*\\}" | head -1)"
 VERSION="\$(printf '%s' "\$MANIFEST" | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"\$/\\1/')"
-URL="\$(printf '%s' "\$MANIFEST" | grep -oE '"url"[[:space:]]*:[[:space:]]*"https[^"]+"' | head -1 | sed -E 's/.*"(https[^"]+)"\$/\\1/')"
+URL="\$(printf '%s' "\$PLATFORM_BLOB" | grep -oE '"url"[[:space:]]*:[[:space:]]*"https[^"]+"' | head -1 | sed -E 's/.*"(https[^"]+)"\$/\\1/')"
 URL="\${URL/\/r\//\/d\//}"
-[ -n "\$VERSION" ] && [ -n "\$URL" ] || { echo "[FEHLER] Kein Release in Manifest (linux/\$ARCH)" >&2; exit 1; }
-echo "Latest: v\$VERSION"
+[ -n "\$VERSION" ] && [ -n "\$URL" ] || { echo "[FEHLER] Kein Release in Manifest (Plattform: \$PLATFORM_KEY). Manifest-Keys: \$(printf '%s' "\$MANIFEST" | grep -oE '"[a-z]+-[a-z0-9_]+"[[:space:]]*:' | head -10 | tr '\n' ' ')" >&2; exit 1; }
+case "\$URL" in
+  *.AppImage) ;;
+  *) echo "[FEHLER] Feed-URL fuer \$PLATFORM_KEY ist keine AppImage: \$URL" >&2; exit 1 ;;
+esac
+echo "Latest: v\$VERSION (\$PLATFORM_KEY)"
 
-CUR=""
-[ -s "\$APP_DIR/.version" ] && CUR="\$(tr -d '[:space:]' < "\$APP_DIR/.version")"
-if [ "\$CUR" = "\$VERSION" ] && [ -x "\$APPIMAGE" ]; then
-  echo "AppImage v\$VERSION bereits vorhanden — kein Download."
+# binary_ok: ausfuehrbar UND richtige Architektur UND startet (--version).
+# Faengt falsche Plattform-Binaries (z. B. macOS-tarball als .AppImage) ab,
+# BEVOR die systemd-Unit sie in eine Restart-Loop schickt. Prueft auch ein
+# bereits vorhandenes Binary, damit ein Re-Run ein kaputtes ersetzt.
+binary_ok() {
+  [ -x "\$1" ] || return 1
+  if command -v file >/dev/null 2>&1; then
+    file -b "\$1" | grep -q "ELF 64-bit" || { echo "file-Check: \$1 ist kein 64-bit-ELF: \$(file -b "\$1" | head -c 120)" >&2; return 1; }
+  fi
+  timeout 120 "\$1" --appimage-extract-and-run --version >/dev/null 2>&1
+}
+if binary_ok "\$APPIMAGE"; then
+  echo "AppImage bereits vorhanden und lauffaehig — kein Download."
 else
+  [ -x "\$APPIMAGE" ] && echo "Vorhandenes Binary defekt/falsch — lade neu."
+  systemctl stop "\$UNIT" 2>/dev/null || true
   curl -fL --max-time 1800 -o "\$APPIMAGE.part" "\$URL"
   mv "\$APPIMAGE.part" "\$APPIMAGE"
   chmod 755 "\$APPIMAGE"
+  binary_ok "\$APPIMAGE" || { echo "[FEHLER] Heruntergeladenes Binary startet nicht: \$URL (file: \$(file -b "\$APPIMAGE" | head -c 120))" >&2; exit 1; }
   printf '%s\n' "\$VERSION" > "\$APP_DIR/.version"
+  echo "AppImage v\$VERSION verifiziert (file + --version OK)."
 fi
 chown "\$SERVICE_USER:\$SERVICE_USER" "\$APPIMAGE" "\$APP_DIR/.version"
 
