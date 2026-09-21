@@ -272,6 +272,7 @@ PLATFORM_BLOB="\$(printf '%s' "\$MANIFEST" | grep -oE "\"\$PLATFORM_KEY\"[[:spac
 VERSION="\$(printf '%s' "\$MANIFEST" | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"\$/\\1/')"
 URL="\$(printf '%s' "\$PLATFORM_BLOB" | grep -oE '"url"[[:space:]]*:[[:space:]]*"https[^"]+"' | head -1 | sed -E 's/.*"(https[^"]+)"\$/\\1/')"
 URL="\${URL/\/r\//\/d\//}"
+URL="\$(printf '%s' "\$URL" | sed -E 's#([^:])//+#\\1/#g')"
 [ -n "\$VERSION" ] && [ -n "\$URL" ] || { echo "[FEHLER] Kein Release in Manifest (Plattform: \$PLATFORM_KEY). Manifest-Keys: \$(printf '%s' "\$MANIFEST" | grep -oE '"[a-z]+-[a-z0-9_]+"[[:space:]]*:' | head -10 | tr '\n' ' ')" >&2; exit 1; }
 case "\$URL" in
   *.AppImage) ;;
@@ -362,10 +363,16 @@ check_system_libs "\$APPIMAGE" || exit 1
 # nachgeladene (Font-Stack: libfribidi u. a.) knallen erst zur Laufzeit mit
 # "error while loading shared libraries: X". Die Meldung nennt den exakten
 # Soname -> installieren -> Retry, max. 8 Runden, kein endlos-Loop.
+# Pre-Seed: diese dlopen-Libs sind auf Debian 13 minimal BELEGT noetig
+# (Hauptlauf CT 105). Ein apt-Schritt statt 8 einzelne Extract-Runden.
+# Sonames (nicht Paketnamen), damit apt_install_for_soname portabel aufloest.
+PRESEED_SONAMES="libfribidi.so.0 libfontconfig.so.1 libwayland-client.so.0 libwayland-cursor.so.0 libwayland-egl.so.1 libX11.so.6 libharfbuzz.so.0 libgpg-error.so.0"
+apt-get update -qq >/dev/null 2>&1 || true
+for _lib in \$PRESEED_SONAMES; do apt_install_for_soname "\$_lib" >/dev/null 2>&1 || true; done
 SMOKE_LOG="\$(mktemp)"
 SMOKE_OK=0
 TRIED_LIBS=""
-for _ in 1 2 3 4 5 6 7 8; do
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   if binary_ok "\$APPIMAGE"; then SMOKE_OK=1; break; fi
   echo "Smoke-Test (--version) fehlgeschlagen, Ausgabe:" >&2
   tail -n 8 "\$SMOKE_LOG" >&2
