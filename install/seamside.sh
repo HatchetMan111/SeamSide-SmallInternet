@@ -39,7 +39,7 @@ DISK="${DISK:-8}"           # GB
 BRIDGE="${BRIDGE:-vmbr0}"
 STORAGE="${STORAGE:-}"      # RootFS-Storage, leer = Auto (bevorzugt local-lvm)
 TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
-TEMPLATE="${TEMPLATE:-debian-12-standard}"
+TEMPLATE="${TEMPLATE:-debian-13-standard}"   # Pflicht: Seamside braucht glibc>=2.39 (Debian 13+, kein Debian 12!)
 SEAMSIDE_INSTANCE="${SEAMSIDE_INSTANCE:-main}"
 SEAMSIDE_MODE="${SEAMSIDE_MODE:-sibling}"   # sibling | new-user
 SEAMSIDE_JOIN_LINK="${SEAMSIDE_JOIN_LINK:-}"
@@ -177,9 +177,14 @@ if [[ -z "$STORAGE" ]]; then
   info "RootFS-Storage (auto): $STORAGE"
 fi
 
-# Neuestes debian-12-standard Template sicherstellen.
+# Neuestes Template sicherstellen (Default debian-13-standard: Seamside
+# braucht glibc>=2.39 — Debian 12 (glibc 2.36) startet das Binary nicht).
 TPL="$(pveam available --section system 2>/dev/null | grep -oE "${TEMPLATE}[^ ]*amd64[^ ]*\.tar\.(gz|xz|zst)" | sort -V | tail -1 || true)"
-[[ -n "$TPL" ]] || fail "Kein ${TEMPLATE}-Template gefunden (pveam available)."
+if [[ -z "$TPL" ]]; then
+  say "Verfuegbare Debian-Templates:" >&2
+  pveam available --section system 2>/dev/null | grep -oE "debian-[0-9]+-standard[^ ]*" | sort -Vu >&2 || true
+  fail "Kein ${TEMPLATE}-Template gefunden. Falls Proxmox kein Debian 13 anbietet: --template-storage pruefen bzw. pveam update, oder Ubuntu 24.04+-Template via TEMPLATE=ubuntu-24.04-standard."
+fi
 if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$TPL"; then
   info "Lade Template $TPL nach $TEMPLATE_STORAGE ..."
   pveam download "$TEMPLATE_STORAGE" "$TPL"
@@ -210,6 +215,15 @@ pct start "$CT" 2>/dev/null || true
 info "Warte auf Container-Start ..."
 for _ in $(seq 1 30); do pct exec "$CT" -- true 2>/dev/null && break; sleep 2; done
 pct exec "$CT" -- true || fail "Container $CT antwortet nicht auf pct exec."
+
+# OS-Gate: Seamside braucht glibc>=2.39 -> Debian 13+ (Debian 12 = glibc 2.36
+# startet das Binary nicht). Frueh abbrechen statt 20 Min. ins Leere zu laden.
+GUEST_ID="$(pct exec "$CT" -- cat /etc/os-release 2>/dev/null | grep -E "^ID=" | cut -d= -f2 | tr -d '"' || true)"
+GUEST_VER="$(pct exec "$CT" -- cat /etc/os-release 2>/dev/null | grep -E "^VERSION_ID=" | cut -d= -f2 | tr -d '"' || true)"
+info "Gast-OS in CT $CT: ${GUEST_ID:-?} ${GUEST_VER:-?}"
+if [[ "$GUEST_ID" == "debian" && -n "$GUEST_VER" && "${GUEST_VER%%.*}" -lt 13 ]]; then
+  fail "CT $CT ist Debian $GUEST_VER (glibc 2.36) — Seamside braucht Debian 13+ (glibc>=2.39). Loesung: pct stop $CT && pct destroy $CT, dann Script OHNE --ctid erneut laufen lassen (erstellt Debian-13-LXC). Betrifft auch alte CTs (105/147)."
+fi
 
 CT_IP="$(pct exec "$CT" -- ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1 || true)"
 [[ -n "$CT_IP" ]] || CT_IP="<LXC-IP>"
@@ -352,7 +366,7 @@ if [ ! -x "\$APPIMAGE" ] || [ "\$CUR" != "\$VERSION" ]; then
 fi
 chown "\$SERVICE_USER:\$SERVICE_USER" "\$APPIMAGE" "\$APP_DIR/.version"
 check_system_libs "\$APPIMAGE" || exit 1
-binary_ok "\$APPIMAGE" || { echo "[FEHLER] AppImage v\$VERSION startet nicht (Details oben). URL: \$URL" >&2; exit 1; }
+binary_ok "\$APPIMAGE" || { echo "[FEHLER] AppImage v\$VERSION startet nicht (Details oben). URL: \$URL" >&2; echo "Hinweis bei 'glibc'-Meldung: Gast-OS zu alt — Debian 13+ (oder Ubuntu 24.04+) noetig." >&2; exit 1; }
 echo "AppImage v\$VERSION verifiziert (Libs + --version OK)."
 
 # systemd-Unit (Restart=always, After=network-online.target, Passphrase via Credential)

@@ -13,7 +13,7 @@ offizielle AppImage von `updates.seamside.com` (x86_64/aarch64), systemd-Service
 | Direkter `http://<LXC-IP>:<PORT>`? | **nein** – der serve-Knoten braucht keine offenen Inbound-Ports (Outbound-P2P wie die Desktop-App); `SEAMSIDE_PORT` (Default 8080) ist nur der interne serve-Port |
 | Standard-Ressourcen | 2 vCPU / 2048 MB RAM / 8 GB Disk |
 | CT-ID | immer die **nächste freie ID** (`pvesh get /cluster/nextid`), außer `--ctid` gesetzt |
-| Template | `debian-12-standard` (neuestes auf Storage `local`) |
+| Template | `debian-13-standard` (neuestes auf Storage `local`) – **Pflicht**: Seamside v0.2.8+ braucht glibc ≥ 2.39, Debian 12 (glibc 2.36) startet das Binary nicht |
 
 > **Hinweis:** Dieses Paket (`install/`, `systemd/`, `README.md`) enthält **nur den
 > Proxmox-Installer**. Der App-Code ist die offizielle Seamside-AppImage
@@ -50,8 +50,10 @@ bash seamside.sh --debug   # = bash -x, maximale Fehlermeldungskette
 Das Skript (`set -euo pipefail`, idempotent):
 1. prüft Host/Tools/ToS, nimmt die nächste freie CT-ID,
 2. erkennt RootFS-Storage (bevorzugt `local-lvm`), lädt das neueste
-   `debian-12-standard`-Template falls nötig,
-3. erstellt den LXC `seamside` (`onboot: 1`, unprivilegiert),
+   `debian-13-standard`-Template falls nötig,
+3. erstellt den LXC `seamside` (`onboot: 1`, unprivilegiert) und prüft per
+   OS-Gate, dass der Gast Debian 13+ ist (Debian 12 wird mit klarer
+   Löschanleitung abgelehnt, statt ins Leere zu installieren),
 4. installiert im Container Curl/CA-Certs, legt User `seamside` an,
    lädt die neueste AppImage vom offiziellen Feed nach `/opt/seamside/<instanz>/`,
    sichert Passphrase (generiert falls leer) unter `/etc/seamside/<instanz>.passphrase` (600),
