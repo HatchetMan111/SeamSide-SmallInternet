@@ -417,9 +417,9 @@ check_system_libs "\$APPIMAGE" || exit 1
 # "error while loading shared libraries: X". Die Meldung nennt den exakten
 # Soname -> installieren -> Retry, max. 8 Runden, kein endlos-Loop.
 # Pre-Seed: diese dlopen-Libs sind auf Debian 13 minimal BELEGT noetig
-# (Hauptlauf CT 105). Ein apt-Schritt statt 8 einzelne Extract-Runden.
+# (Laeufe CT 104/105). Ein apt-Schritt statt einzelner Extract-Runden.
 # Sonames (nicht Paketnamen), damit apt_install_for_soname portabel aufloest.
-PRESEED_SONAMES="libfribidi.so.0 libfontconfig.so.1 libwayland-client.so.0 libwayland-cursor.so.0 libwayland-egl.so.1 libX11.so.6 libharfbuzz.so.0 libgpg-error.so.0"
+PRESEED_SONAMES="libfribidi.so.0 libfontconfig.so.1 libwayland-client.so.0 libwayland-cursor.so.0 libwayland-egl.so.1 libwayland-server.so.0 libX11.so.6 libxcb.so.1 libharfbuzz.so.0 libgpg-error.so.0 libgbm.so.1 libGL.so.1 libEGL.so.1"
 apt-get update -qq >/dev/null 2>&1 || true
 for _lib in \$PRESEED_SONAMES; do apt_install_for_soname "\$_lib" >/dev/null 2>&1 || true; done
 SMOKE_LOG="\$(mktemp)"
@@ -582,6 +582,14 @@ say "  Container  : CT $CT (Hostname: $HOSTNAME, onboot=1)"
 say "  Ressourcen : $CORES vCPU / ${RAM} MB RAM / ${DISK} GB Disk"
   say "  Daten      : $SEAMSIDE_DATA_DIR  + Passphrase /etc/seamside/${SEAMSIDE_INSTANCE}.env (BEIDES sichern!)"
   [[ -n "$BACKUP_FILE" ]] && say "  Backup     : $BACKUP_FILE (rotierend, neueste 3 pro CT)"
+  say "  LXC-IP     : $CT_IP"
+  say "  Serve-Port : $CT_IP:${SEAMSIDE_PORT} (intern, Seamside-P2P — KEIN http, KEINE Admin-Web-UI)"
+  if [[ -n "$SEAMSIDE_JOIN_LINK" ]]; then
+    say "  Web-UI     : nach Genehmigung in der App via Share-Link (s. Naechster Schritt)"
+  else
+    say "  Web-UI     : noch NICHT verfuegbar — erst Pairing-Link setzen (Re-Run mit --join-link),"
+    say "               dann in der App genehmigen, dann Frame teilen -> Link im Browser oeffnen"
+  fi
 if [[ "$SEAMSIDE_MODE" == "sibling" ]]; then
   say "  Naechster Schritt: in der Seamside-App unter Devices den Server genehmigen (Admin-Geraet)."
 else
